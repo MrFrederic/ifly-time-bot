@@ -1,5 +1,7 @@
 import logging
-from telegram.ext import ConversationHandler, CommandHandler, CallbackQueryHandler, Application, MessageHandler, filters
+from telegram import Update
+from telegram.error import TelegramError, NetworkError, TimedOut, RetryAfter
+from telegram.ext import ConversationHandler, CommandHandler, CallbackQueryHandler, Application, MessageHandler, filters, ContextTypes
 from datetime import time
 from .config import settings
 from .handlers.buy import start_buy, date_selected, hours_selected, custom_date_handler, confirm_replace, SELECT_DATE, SELECT_HOURS, CONFIRM_REPLACE, custom_hours_handler, cancel_setup
@@ -12,6 +14,21 @@ from time import sleep
 # Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler for the bot."""
+    error = context.error
+    if isinstance(error, NetworkError):
+        logger.warning(f"NetworkError: {error}")
+    elif isinstance(error, TimedOut):
+        logger.warning(f"Request timed out: {error}")
+    elif isinstance(error, RetryAfter):
+        logger.warning(f"Rate limited. Retry after {error.retry_after}s")
+    elif isinstance(error, TelegramError):
+        logger.error(f"TelegramError: {error}", exc_info=context.error)
+    else:
+        logger.error(f"Unhandled exception: {error}", exc_info=context.error)
 
 def setup_handlers(application: Application):
     # Buy Conversation
@@ -49,6 +66,9 @@ def setup_handlers(application: Application):
     # Also we don't need to call refresh method from /buy and /cancel because those commands
     # will trigger this listener anyway + bot handles actual response first.
     application.add_handler(MessageHandler(filters.ALL & ~filters.UpdateType.EDITED, refresh_sticky_list), group=1)
+
+    # Global error handler
+    application.add_error_handler(error_handler)
 
 async def start_command(update, context):
     text = (

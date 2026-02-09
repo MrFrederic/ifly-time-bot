@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from datetime import date, datetime
@@ -63,21 +64,50 @@ async def delete_command_message(update: Update):
     except TelegramError as e:
         logger.error(f"Telegram API error while deleting message: {e}")
 
-async def is_user_in_chat(bot, user_id: int, group_id: int) -> bool:
-    """Check if a user is still a member of the chat."""
-    try:
-        member = await bot.get_chat_member(group_id, user_id)
-        # ChatMemberStatus: 'left', 'kicked' means user is not in chat
-        return member.status not in ['left', 'kicked']
-    except BadRequest as e:
-        logger.warning(f"User {user_id} not found in group {group_id}: {e}")
-        return False
-    except Forbidden as e:
-        logger.warning(f"Bot not authorized to check membership for user_id={user_id}: {e}")
-        return True  # Assume user is in chat if we can't check
-    except TelegramError as e:
-        logger.error(f"Telegram API error while checking user {user_id} membership: {e}")
-        return True  # Assume user is in chat if we can't check
+async def is_user_in_chat(bot, user_id: int, group_id: int, max_retries: int = 3) -> bool:
+    """Check if a user is still a member of the chat. Retries on transient errors."""
+    last_exception = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            member = await bot.get_chat_member(group_id, user_id)
+            # ChatMemberStatus: 'left', 'kicked' means user is not in chat
+            if member.status in ['left', 'kicked']:
+                logger.info(f"User {user_id} confirmed as '{member.status}' in group {group_id}.")
+                return False
+            return True
+        except Forbidden as e:
+            logger.warning(f"Bot not authorized to check membership for user_id={user_id}: {e}")
+            return True  # Assume user is in chat if we can't check
+        except BadRequest as e:
+            error_msg = str(e).lower()
+            # "user not found" is a definitive signal that the user doesn't exist
+            if "user not found" in error_msg:
+                logger.info(f"User {user_id} definitively not found in group {group_id}: {e}")
+                return False
+            # Other BadRequest errors (like Participant_id_invalid) can be transient
+            last_exception = e
+            logger.warning(
+                f"BadRequest checking user {user_id} in group {group_id} "
+                f"(attempt {attempt}/{max_retries}): {e}"
+            )
+        except (NetworkError, TelegramError) as e:
+            last_exception = e
+            logger.warning(
+                f"Error checking user {user_id} in group {group_id} "
+                f"(attempt {attempt}/{max_retries}): {type(e).__name__}: {e}"
+            )
+
+        if attempt < max_retries:
+            delay = 2 ** attempt  # exponential backoff: 2s, 4s
+            logger.info(f"Retrying is_user_in_chat for user {user_id} in {delay}s...")
+            await asyncio.sleep(delay)
+
+    # All retries exhausted — assume user is still in chat to avoid false deletions
+    logger.error(
+        f"All {max_retries} attempts to check user {user_id} in group {group_id} failed. "
+        f"Last error: {last_exception}. Assuming user is still in chat."
+    )
+    return True
 
 async def get_user_display_name(bot, user_id: int, group_id: int, ping: bool = True, escape_md: bool = True) -> str:
     try:
