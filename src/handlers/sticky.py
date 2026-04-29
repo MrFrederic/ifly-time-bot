@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from ..helpers import list_requests, check_group
@@ -14,7 +14,20 @@ STICKY_MESSAGE_ID_KEY = 'sticky_list_message_id'
 STICKY_MESSAGE_CONTENT_KEY = 'sticky_list_content'
 
 
-async def refresh_sticky_list(update: Update, context: ContextTypes.DEFAULT_TYPE, is_system = False):
+def _build_keyboard():
+    """Build the inline keyboard with a URL button to the mini-app.
+
+    Passes startapp=<token> so the server can verify the app was opened
+    from this button (the token is validated against initData.start_param,
+    which is part of the HMAC-signed payload).
+    """
+    url = f"{settings.MINIAPP_URL}?startapp={settings.miniapp_token}&mode=compact"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Создать запрос", url=url)]
+    ])
+
+
+async def refresh_sticky_list(update: Update, context: ContextTypes.DEFAULT_TYPE, is_system=False):
     """
     Refreshes the sticky list message in the chat.
     - For user messages (is_system=False): Always resend to keep message at bottom (sticky behavior)
@@ -22,7 +35,7 @@ async def refresh_sticky_list(update: Update, context: ContextTypes.DEFAULT_TYPE
     Stores message ID in database for persistence.
     """
     try:
-        if not is_system and update and not await check_group(update): 
+        if not is_system and update and not await check_group(update):
             return
 
         # Generate the list message
@@ -31,9 +44,11 @@ async def refresh_sticky_list(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Failed to generate request list for sticky message: {e}")
             text = None
-        
+
         if not text:
             text = Messages.MSG_NO_REQUESTS
+
+        keyboard = _build_keyboard()
 
         # Get the last message ID and content from database
         last_msg_id_str = get_bot_state(STICKY_MESSAGE_ID_KEY)
@@ -54,39 +69,38 @@ async def refresh_sticky_list(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=settings.ALLOWED_GROUP_ID,
                     message_id=last_msg_id,
                     text=text,
-                    parse_mode='Markdown'
+                    parse_mode='Markdown',
+                    reply_markup=keyboard,
                 )
                 # Update stored content
                 set_bot_state(STICKY_MESSAGE_CONTENT_KEY, text)
                 logger.info(f"Successfully edited sticky message {last_msg_id}")
                 return
             except BadRequest as e:
-                # Message might have been deleted or is too old to edit
                 logger.warning(f"Could not edit old sticky message {last_msg_id}: {e}")
-                # Fall through to send a new message
             except Exception as e:
                 logger.error(f"Unexpected error editing sticky message {last_msg_id}: {e}")
-                # Fall through to send a new message
 
         # For user messages: always resend to keep sticky (at bottom)
         # For system calls: send new message if edit failed or no previous message
         if not is_system:
-            logger.debug(f"User message detected, resending sticky list to keep it at bottom")
+            logger.debug("User message detected, resending sticky list to keep it at bottom")
 
         # Send a new message
         try:
             sent_msg = await context.bot.send_message(
                 chat_id=settings.ALLOWED_GROUP_ID,
                 message_thread_id=settings.THREAD_ID,
-                text=text, 
-                parse_mode='Markdown', 
-                disable_notification=True
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=True,
+                reply_markup=keyboard,
             )
             # Store the new message ID and content in database
             set_bot_state(STICKY_MESSAGE_ID_KEY, str(sent_msg.message_id))
             set_bot_state(STICKY_MESSAGE_CONTENT_KEY, text)
             logger.info(f"Sent new sticky message with id={sent_msg.message_id}")
-            
+
             # Delete old message if it exists
             if last_msg_id:
                 try:

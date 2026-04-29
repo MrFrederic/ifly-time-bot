@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import date, datetime
+from datetime import datetime
 from telegram import Update
 from telegram.error import TelegramError, BadRequest, Forbidden, NetworkError
 from .config import settings
@@ -30,23 +30,6 @@ async def check_group(update: Update):
         )
         return False
     return True
-
-def parse_user_date(text: str) -> date:
-    today = datetime.now(settings.tz).date()
-    try:
-        return datetime.strptime(text, "%d.%m.%Y").date()
-    except ValueError:
-        pass
-    
-    try:
-        dt = datetime.strptime(text, "%d.%m")
-        candidate = dt.replace(year=today.year).date()
-        if candidate < today:
-             candidate = candidate.replace(year=today.year + 1)
-        return candidate
-    except ValueError:
-        logger.warning(f"Failed to parse user date input: '{text}'")
-        raise ValueError("Invalid format")
 
 async def delete_command_message(update: Update):
     """Delete the command message to keep chat clean."""
